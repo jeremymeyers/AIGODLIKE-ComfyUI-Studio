@@ -1,7 +1,7 @@
 const config = {
   namespaced: true,
   state: () => ({
-    language: localStorage.getItem("CS.language") || "cn",
+    language: localStorage.getItem("CS.language") || "en",
     shortcut: localStorage.getItem("CS.shortcut") || "click",
     windowing: localStorage.getItem("CS.windowing") || "full",
   }),

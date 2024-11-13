@@ -15,7 +15,7 @@ export default {
           value: "tc",
         },
       ],
-      selectedLanguage: "cn",
+      selectedLanguage: "en",
     };
   },
   computed: {
