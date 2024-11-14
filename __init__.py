@@ -10,6 +10,8 @@ from copy import deepcopy
 from aiohttp import web
 from pathlib import Path
 from .utils import read_json
+from urllib.parse import unquote
+
 """
 1. 上传图片到缩略图文件夹
 2. 获取模型管理配置
@@ -17,7 +19,8 @@ from .utils import read_json
 
 """
 CUR_PATH = Path(__file__).parent.absolute()
-MOUNT_ROOT = "/cs/"
+# MOUNT_ROOT = "/cs/"
+MOUNT_ROOT = "/cs"
 IMG_SUFFIXES = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".svg", ".ico", ".apng", ".tif", ".hdr", ".exr"]
 CONFIG_PATH = CUR_PATH.joinpath("model-config.json")
 WK_PATH = CUR_PATH.joinpath("workflow")
@@ -402,10 +405,17 @@ async def fetch_config(request: web.Request):
         if dir_tags:
             mcfg["tags"].extend(dir_tags)
             mcfg["dir_tags"] = dir_tags
-        mcfg["cover"] = urllib.parse.quote(path_to_url(mcfg["cover"]))
+        # mcfg["cover"] = urllib.parse.quote(path_to_url(mcfg["cover"]))
+        # if not mcfg["cover"]:
+        #     continue
+        # mcfg["cover"] += f"?t={time.time()}"
+        mcfg["cover"] = path_to_url(mcfg["cover"])
         if not mcfg["cover"]:
             continue
-        mcfg["cover"] += f"?t={time.time()}"
+        # Normalize the path
+        mcfg["cover"] = normalize_path(mcfg["cover"])
+        # Prepend MOUNT_ROOT and add timestamp
+        mcfg["cover"] = MOUNT_ROOT + mcfg["cover"] + f"?t={time.time()}"
     if CFG_MANAGER.dirty:
         CFG_MANAGER.dump_config()
     json_data = json.dumps(ret_model_map)
@@ -644,55 +654,137 @@ async def test(request: web.Request):
     return web.Response(status=200, body=json_data)
 
 
+# def thumbnail_exists(path):
+#     if not Path(path).exists():
+#         return
+#     if not Path(path).as_posix().startswith(tuple(STATIC_DIR)):
+#         return
+#     suffixes = (".jpg", ".jpeg", ".png", ".gif")
+#     return Path(path).suffix.lower() in suffixes
+
 def thumbnail_exists(path):
+    """
+    Check if a thumbnail image exists and is within the allowed static directories.
+    """
     if not Path(path).exists():
-        return
-    if not Path(path).as_posix().startswith(tuple(STATIC_DIR)):
-        return
-    suffixes = (".jpg", ".jpeg", ".png", ".gif")
+        return False  # Return False if the path does not exist
+    # Normalize the path to ensure consistent comparison
+    normalized_path = normalize_path(Path(path).as_posix())
+    # Normalize the STATIC_DIR paths for comparison
+    static_dirs_normalized = [normalize_path(p) for p in STATIC_DIR]
+    # Check if the normalized path starts with any of the static directories
+    if not any(normalized_path.startswith(sd) for sd in static_dirs_normalized):
+        return False
+    # Check if the file has an allowed image suffix
+    suffixes = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".svg", ".ico", ".apng", ".tif", ".hdr", ".exr")
     return Path(path).suffix.lower() in suffixes
 
 
+
+# def path_to_url(path):
+#     if not path:
+#         return path
+#     path = path.replace("\\", "/")
+#     if not path.startswith("/"):
+#         path = "/" + path
+#     while path.startswith("//"):
+#         path = path[1:]
+#     path = path.replace("//", "/")
+#     return path
+
 def path_to_url(path):
+    """
+    Convert a filesystem path to a URL path, ensuring consistency and correct encoding.
+    """
     if not path:
         return path
+    # Replace backslashes with forward slashes
     path = path.replace("\\", "/")
-    if not path.startswith("/"):
-        path = "/" + path
-    while path.startswith("//"):
-        path = path[1:]
-    path = path.replace("//", "/")
+    # Remove drive letter (e.g., 'G:/') from the path
+    if ':' in path and path[1] == ':':
+        path = path[2:]  # Remove 'G:'
+    # Ensure path starts with '/'
+    if not path.startswith('/'):
+        path = '/' + path
+    # Normalize multiple slashes
+    while '//' in path:
+        path = path.replace('//', '/')
+    # URL-encode the path, keeping '/' unencoded
+    path = urllib.parse.quote(path, safe='/')
+    return path
+
+def normalize_path(path):
+    """
+    Normalize a URL path by replacing multiple slashes with a single slash.
+    """
+    while '//' in path:
+        path = path.replace('//', '/')
     return path
 
 
+# def suffix_limiter(self: web.StaticResource, request: web.Request):
+#     # pass 图片格式后缀名
+#     pass_suffixes = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".svg", ".ico", ".apng", ".tif", ".hdr", ".exr"}
+#     band_suffixes = {".ckpt", ".safetensors", ".pt", ".bin", ".pth", ".yaml", ".onnx"}
+
+#     rel_url = request.match_info["filename"]
+#     try:
+#         filename = Path(rel_url)
+#         if filename.anchor:
+#             raise web.HTTPForbidden()
+#         filepath = self._directory.joinpath(filename).resolve()
+#         if filepath.exists() and filepath.suffix.lower() in band_suffixes:
+#             raise web.HTTPForbidden(reason="File type is not allowed")
+#     finally:
+#         ...
+
 def suffix_limiter(self: web.StaticResource, request: web.Request):
-    # pass 图片格式后缀名
     pass_suffixes = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".svg", ".ico", ".apng", ".tif", ".hdr", ".exr"}
     band_suffixes = {".ckpt", ".safetensors", ".pt", ".bin", ".pth", ".yaml", ".onnx"}
 
-    rel_url = request.match_info["filename"]
+    # Decode the URL-encoded filename
+    rel_url = unquote(request.match_info["filename"])
+    # print(f"Requested filename: {rel_url}")
+
     try:
         filename = Path(rel_url)
         if filename.anchor:
             raise web.HTTPForbidden()
         filepath = self._directory.joinpath(filename).resolve()
+        # print(f"Resolved filepath: {filepath}")
+
         if filepath.exists() and filepath.suffix.lower() in band_suffixes:
             raise web.HTTPForbidden(reason="File type is not allowed")
     finally:
         ...
 
 
+# def filesize_limiter(self: web.StaticResource, request: web.Request):
+#     rel_url = request.match_info["filename"]
+#     try:
+#         filename = Path(rel_url)
+#         filepath = self._directory.joinpath(filename).resolve()
+#         # 如果文件大于 50MB, 则禁止访问
+#         if filepath.exists() and filepath.stat().st_size > 50 * 1024 * 1024:
+#             raise web.HTTPForbidden(reason="File size is too large")
+#     finally:
+#         ...
+
 def filesize_limiter(self: web.StaticResource, request: web.Request):
-    rel_url = request.match_info["filename"]
+    # Decode the URL-encoded filename
+    rel_url = unquote(request.match_info["filename"])
+    # print(f"Requested filename: {rel_url}")
+
     try:
         filename = Path(rel_url)
         filepath = self._directory.joinpath(filename).resolve()
-        # 如果文件大于 50MB, 则禁止访问
+        # print(f"Resolved filepath: {filepath}")
+
+        # Check file size
         if filepath.exists() and filepath.stat().st_size > 50 * 1024 * 1024:
             raise web.HTTPForbidden(reason="File size is too large")
     finally:
         ...
-
 
 class LimitResource(web.StaticResource):
     """
@@ -760,18 +852,68 @@ class LimitRouter(web.StaticDef):
         return list(routes.values())
 
 
+# def add_static_resource(prefix, path, pprefix=MOUNT_ROOT, limit=False):
+#     STATIC_DIR.add(Path(path).as_posix())
+#     app = server.PromptServer.instance.app
+#     prefix = path_to_url(prefix)
+#     prefix = pprefix + urllib.parse.quote(prefix)
+#     prefix = path_to_url(prefix)
+#     if limit:
+#         route = LimitRouter(prefix, path, {"follow_symlinks": True})
+#     else:
+#         route = web.static(prefix, path, follow_symlinks=True)
+#     app.add_routes([route])
+
+from urllib.parse import quote
+
 def add_static_resource(prefix, path, pprefix=MOUNT_ROOT, limit=False):
-    STATIC_DIR.add(Path(path).as_posix())
+    """
+    Adds a static resource to the server with path normalization and URL-encoding
+    to ensure correct route matching for paths containing spaces or special characters.
+    """
+    STATIC_DIR.add(normalize_path(Path(path).as_posix()))
     app = server.PromptServer.instance.app
-    prefix = path_to_url(prefix)
-    prefix = pprefix + urllib.parse.quote(prefix)
-    prefix = path_to_url(prefix)
-    if limit:
-        route = LimitRouter(prefix, path, {"follow_symlinks": True})
+
+    # Remove drive letter from prefix if present (e.g., 'G:/')
+    if ':' in prefix and prefix[1] == ':':
+        prefix = prefix[2:]
+
+    # Replace backslashes with forward slashes
+    prefix = prefix.replace("\\", "/")
+
+    # Concatenate pprefix and prefix without introducing double slashes
+    if not pprefix.endswith('/') and not prefix.startswith('/'):
+        full_prefix = pprefix + '/' + prefix
+    elif pprefix.endswith('/') and prefix.startswith('/'):
+        full_prefix = pprefix[:-1] + prefix
     else:
-        route = web.static(prefix, path, follow_symlinks=True)
+        full_prefix = pprefix + prefix
+
+    # Normalize the resulting path to remove double slashes
+    full_prefix = normalize_path(full_prefix)
+
+    # URL-encode the full prefix
+    full_prefix_encoded = quote(full_prefix, safe='/')
+
+    # Debug log to print the path being registered (optional)
+    print(f"Registering route: prefix='{full_prefix_encoded}', path='{path}', pprefix='{pprefix}'")
+
+    # Add the static route with the URL-encoded prefix
+    if limit:
+        route = LimitRouter(full_prefix_encoded, path, {"follow_symlinks": True})
+    else:
+        route = web.static(full_prefix_encoded, path, follow_symlinks=True)
     app.add_routes([route])
 
+
+# def init():
+#     modelpath_map = ModelManager.model_path_dict()
+#     for mtype in modelpath_map:
+#         for path in modelpath_map[mtype][0]:
+#             if not Path(path).exists():
+#                 continue
+#             add_static_resource(path, path, "", limit=True)
+#     add_static_resource("", CUR_PATH.as_posix())
 
 def init():
     modelpath_map = ModelManager.model_path_dict()
@@ -779,8 +921,8 @@ def init():
         for path in modelpath_map[mtype][0]:
             if not Path(path).exists():
                 continue
-            add_static_resource(path, path, "", limit=True)
-    add_static_resource("", CUR_PATH.as_posix())
+            add_static_resource(path, path, MOUNT_ROOT, limit=True)
+    add_static_resource("", CUR_PATH.as_posix(), MOUNT_ROOT)
 
 
 init()
